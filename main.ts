@@ -1,87 +1,63 @@
 /**
  * Periapsis — repository entrypoint.
  *
- * Verifies the game files, prints their sizes, and copies the game/ directory
- * into out/ so the result can be served statically.
- *
- * Runs directly on Node 22.18+ (native TypeScript type stripping).
- * No dependencies.
+ * Checks the game files, copies game/ and screenshots/ into the output directory
+ * and writes dossier.json with the vendored make.fun library. Node 22.18+, no deps.
+ * Outside the grader, MAKEFUN_OUTPUT_DIR stands in for /output:
+ *   MAKEFUN_OUTPUT_DIR=out node main.ts
  */
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildDossier } from './vendor/makefun-game.ts';
 
 const root = dirname(fileURLToPath(import.meta.url));
-const gameDir = join(root, 'game');
-const outDir = join(root, 'out');
+const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-const required = [
-  'game/index.html',
-  'game/game.js',
-  'game/style.css',
-];
-
-function humanSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  return `${(bytes / 1024).toFixed(1)} KiB`;
-}
-
-let failed = false;
-
-console.log('periapsis · build check');
-console.log('----------------------------------------');
-
-for (const rel of required) {
+const problems = ['game/index.html', 'game/game.js', 'game/style.css'].flatMap((rel) => {
   const abs = join(root, rel);
-  if (!existsSync(abs)) {
-    console.error(`MISSING  ${rel}`);
-    failed = true;
-    continue;
-  }
+  if (!existsSync(abs)) return [`MISSING  ${rel}`];
   const info = statSync(abs);
-  if (!info.isFile() || info.size === 0) {
-    console.error(`EMPTY    ${rel}`);
-    failed = true;
-    continue;
-  }
-  console.log(`OK       ${rel.padEnd(16)} ${String(info.size).padStart(7)} bytes  (${humanSize(info.size)})`);
-}
-
-// Cheap structural checks: the HTML must reference the script and stylesheet,
-// and the script must be a classic script (file:// safe, no ES module).
-if (!failed) {
-  const html = readFileSync(join(gameDir, 'index.html'), 'utf8');
-  const js = readFileSync(join(gameDir, 'game.js'), 'utf8');
-  if (!html.includes('game.js')) {
-    console.error('INVALID  game/index.html does not load game.js');
-    failed = true;
-  }
-  if (!html.includes('style.css')) {
-    console.error('INVALID  game/index.html does not load style.css');
-    failed = true;
-  }
-  if (/<script[^>]+type\s*=\s*["']module["']/i.test(html)) {
-    console.error('INVALID  game/index.html uses an ES module (file:// would break)');
-    failed = true;
-  }
-  if (!js.trimStart().startsWith('/*') && !js.trimStart().startsWith('(function')) {
-    console.error('INVALID  game/game.js has an unexpected header');
-    failed = true;
-  }
-}
-
-if (failed) {
-  console.error('----------------------------------------');
-  console.error('Build check failed. Nothing copied.');
+  return info.isFile() && info.size > 0 ? [] : [`EMPTY    ${rel}`];
+});
+if (problems.length > 0) {
+  console.error('periapsis · build check failed — nothing copied');
+  for (const problem of problems) console.error(`  ${problem}`);
   process.exit(1);
 }
 
-rmSync(outDir, { recursive: true, force: true });
-mkdirSync(outDir, { recursive: true });
-cpSync(gameDir, outDir, { recursive: true });
+// Every regular file under dir, as a path from it, in code-unit order.
+const filesUnder = (dir: string): { path: string; bytes: number }[] => {
+  const files: { path: string; bytes: number }[] = [];
+  const walk = (sub: string): void => {
+    for (const entry of readdirSync(join(dir, sub), { withFileTypes: true })) {
+      const rel = sub === '' ? entry.name : `${sub}/${entry.name}`;
+      if (entry.isDirectory()) walk(rel);
+      else if (entry.isFile()) files.push({ path: rel, bytes: statSync(join(dir, rel)).size });
+    }
+  };
+  walk('');
+  return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+};
 
-console.log('----------------------------------------');
-console.log(`copied   game/ -> out/ (${relative(root, outDir)}/)`);
-const outIndex = statSync(join(outDir, 'index.html'));
-console.log(`ready    out/index.html (${outIndex.size} bytes) — open it directly or serve out/`);
+mkdirSync(out, { recursive: true });
+cpSync(join(root, 'game'), join(out, 'game'), { recursive: true });
+mkdirSync(join(out, 'screenshots'), { recursive: true });
+if (existsSync(join(root, 'screenshots'))) cpSync(join(root, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+
+for (const kind of ['game', 'screenshots']) {
+  for (const file of filesUnder(join(out, kind))) {
+    console.log(`copied   ${`${kind}/${file.path}`.padEnd(32)} ${String(file.bytes).padStart(8)} bytes`);
+  }
+}
+
+const dossier = buildDossier(out, {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 50331648,
+  game_path_max_bytes: 1000,
+});
+writeFileSync(join(out, 'dossier.json'), dossier);
+console.log(`wrote    ${'dossier.json'.padEnd(32)} ${String(dossier.byteLength).padStart(8)} bytes`);
 console.log('ok');

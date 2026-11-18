@@ -17,8 +17,17 @@
   const MAX_DRAG = 220;
   const MAX_IMPULSE = 300;
   const PROBE_R = 6;
-  const TRAIL_MAX = 460;
+  const TRAIL_MAX = 820;
+  const TRAIL_STEP = 2.05;
   const FINAL_DRIFT = 16;
+  const EMPTY_DASH = [];
+  const RING_DASH = [7, 9];
+  const AIM_DASH = [2, 7];
+  const PREDICT_DASH = [1, 5];
+  const RIBBON_SPANS = [1, 0.68, 0.4];
+  const RIBBON_WIDTHS = [12, 6, 2.4];
+  const RIBBON_ALPHAS = [0.035, 0.07, 0.11];
+  const ORBIT_DASH = [2, 9];
   const MONO = 'ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
 
   const C = {
@@ -99,6 +108,7 @@
   let backdrop = null;
   let vignette = null;
   let glowCyan, glowGold, glowViolet, glowMint, glowWhite, glowRed;
+  let probeHalo, probeCore, flareSprite, streakCyan;
 
   function makeGlow(color) {
     const size = 64;
@@ -116,6 +126,44 @@
     return c;
   }
 
+  // soft four-stop halo, baked once: the probe's aura costs one drawImage
+  function makeHalo(size, c0, c1, c2) {
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const g = c.getContext('2d');
+    const h = size / 2;
+    const grd = g.createRadialGradient(h, h, 0, h, h, h);
+    grd.addColorStop(0, c0);
+    grd.addColorStop(0.18, c1);
+    grd.addColorStop(0.46, c2);
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grd;
+    g.fillRect(0, 0, size, size);
+    return c;
+  }
+
+  // horizontally stretched streak used for speed read
+  function makeStreak(size) {
+    const w = size;
+    const h = Math.max(8, Math.round(size / 3.4));
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const g = c.getContext('2d');
+    const r = w / 2;
+    g.translate(w / 2, h / 2);
+    g.scale(1, h / w);
+    const grd = g.createRadialGradient(0, 0, 0, 0, 0, r);
+    grd.addColorStop(0, 'rgba(255,255,255,0.95)');
+    grd.addColorStop(0.2, 'rgba(170,248,255,0.62)');
+    grd.addColorStop(0.55, 'rgba(90,190,255,0.2)');
+    grd.addColorStop(1, 'rgba(60,130,255,0)');
+    g.fillStyle = grd;
+    g.fillRect(-r, -r * 3, r * 2, r * 6);
+    return c;
+  }
+
   function buildAssets() {
     glowCyan = makeGlow('rgba(120,240,255,0.85)');
     glowGold = makeGlow('rgba(255,205,110,0.9)');
@@ -123,6 +171,26 @@
     glowMint = makeGlow('rgba(110,255,200,0.85)');
     glowWhite = makeGlow('rgba(225,240,255,0.9)');
     glowRed = makeGlow('rgba(255,95,120,0.85)');
+
+    probeHalo = makeHalo(
+      192,
+      'rgba(226,252,255,0.85)',
+      'rgba(120,238,255,0.34)',
+      'rgba(74,150,255,0.09)'
+    );
+    probeCore = makeHalo(
+      96,
+      'rgba(255,255,255,1)',
+      'rgba(228,252,255,0.82)',
+      'rgba(140,240,255,0.2)'
+    );
+    flareSprite = makeHalo(
+      192,
+      'rgba(255,255,255,1)',
+      'rgba(206,246,255,0.62)',
+      'rgba(120,196,255,0.14)'
+    );
+    streakCyan = makeStreak(128);
 
     backdrop = document.createElement('canvas');
     backdrop.width = W;
@@ -146,6 +214,29 @@
       b.fillRect(0, 0, W, H);
     }
 
+    // nebula wash: soft overlapping lobes, baked once, so the void has depth
+    const lobes = [
+      { x: 292, y: 238, rx: 540, ry: 300, rot: -0.5, c: '96,116,255', a: 0.06 },
+      { x: 986, y: 296, rx: 470, ry: 250, rot: 0.34, c: '152,88,255', a: 0.052 },
+      { x: 726, y: 566, rx: 620, ry: 310, rot: -0.2, c: '56,158,224', a: 0.05 },
+      { x: 468, y: 628, rx: 390, ry: 220, rot: 0.58, c: '196,86,180', a: 0.03 }
+    ];
+    for (const l of lobes) {
+      b.save();
+      b.translate(l.x, l.y);
+      b.rotate(l.rot);
+      b.scale(1, l.ry / l.rx);
+      const lg = b.createRadialGradient(0, 0, 0, 0, 0, l.rx);
+      lg.addColorStop(0, 'rgba(' + l.c + ',' + l.a + ')');
+      lg.addColorStop(0.5, 'rgba(' + l.c + ',' + (l.a * 0.42).toFixed(3) + ')');
+      lg.addColorStop(1, 'rgba(' + l.c + ',0)');
+      b.fillStyle = lg;
+      b.beginPath();
+      b.arc(0, 0, l.rx, 0, TAU);
+      b.fill();
+      b.restore();
+    }
+
     // a very faint galactic band
     b.save();
     b.translate(W * 0.5, H * 0.44);
@@ -157,6 +248,33 @@
     b.fillStyle = band;
     b.fillRect(-W, -110, W * 2, 220);
     b.restore();
+
+    // gradient bands: faint sheaves crossing the field at different angles
+    const sheaves = [
+      { y: 452, h: 220, rot: -0.34, a: 0.045, c: '140,124,255' },
+      { y: 268, h: 150, rot: -0.26, a: 0.036, c: '96,178,255' },
+      { y: 622, h: 120, rot: -0.2, a: 0.03, c: '84,214,208' }
+    ];
+    for (const sv of sheaves) {
+      b.save();
+      b.translate(W * 0.5, sv.y);
+      b.rotate(sv.rot);
+      const sg = b.createLinearGradient(0, -sv.h, 0, sv.h);
+      sg.addColorStop(0, 'rgba(' + sv.c + ',0)');
+      sg.addColorStop(0.5, 'rgba(' + sv.c + ',' + sv.a + ')');
+      sg.addColorStop(1, 'rgba(' + sv.c + ',0)');
+      b.fillStyle = sg;
+      b.fillRect(-W, -sv.h, W * 2, sv.h * 2);
+      b.restore();
+    }
+
+    // centre lift: the middle of the field sits a touch brighter than the rim
+    const lift = b.createRadialGradient(W / 2, H * 0.46, 0, W / 2, H * 0.46, 560);
+    lift.addColorStop(0, 'rgba(126,172,236,0.075)');
+    lift.addColorStop(0.46, 'rgba(88,132,214,0.032)');
+    lift.addColorStop(1, 'rgba(60,92,180,0)');
+    b.fillStyle = lift;
+    b.fillRect(0, 0, W, H);
 
     // film grain (subtle, procedural)
     const grain = document.createElement('canvas');
@@ -183,8 +301,8 @@
     const v = vignette.getContext('2d');
     const vg = v.createRadialGradient(W / 2, H / 2, H * 0.28, W / 2, H / 2, H * 0.86);
     vg.addColorStop(0, 'rgba(0,0,0,0)');
-    vg.addColorStop(0.62, 'rgba(0,0,0,0.12)');
-    vg.addColorStop(1, 'rgba(0,0,0,0.62)');
+    vg.addColorStop(0.62, 'rgba(0,0,0,0.08)');
+    vg.addColorStop(1, 'rgba(0,0,0,0.42)');
     v.fillStyle = vg;
     v.fillRect(0, 0, W, H);
 
@@ -424,7 +542,8 @@
     pointerId: null,
     timeScale: 1,
     timeAcc: 0,
-    trailAcc: 0
+    trailAcc: 0,
+    burnFlash: 0
   };
 
   let trail = [];
@@ -479,6 +598,7 @@
     G.timeScale = 1;
     G.timeAcc = 0;
     G.trailAcc = 0;
+    G.burnFlash = 0;
     G.state = 'playing';
     G.shake = 2;
     trail = [];
@@ -595,7 +715,11 @@
     if (G.burnsUsed >= MAX_BURNS) G.drainAt = G.levelTime;
     G.shake = Math.max(G.shake, 4 + charge * 8);
     G.trailAcc = 0;
-    spawnBurst(p.x, p.y, 10 + Math.round(charge * 18), 'cyan', 60 + charge * 170, 0.55);
+    spawnBurst(p.x, p.y, 14 + Math.round(charge * 22), 'cyan', 70 + charge * 200, 0.6);
+    // launch signature: a quick shockwave plus a flare the probe carries away
+    spawnWave(p.x, p.y, C.cyan, 54 + charge * 94, 0.5);
+    spawnWave(p.x, p.y, 'rgba(222,250,255,0.9)', 28 + charge * 44, 0.32);
+    G.burnFlash = 1.1 + charge * 0.5;
     sfx.launch(charge);
   }
 
@@ -676,25 +800,29 @@
     const speed = Math.hypot(p.vx, p.vy);
     if (speed < 6) return;
     G.trailAcc += speed * dt;
-    while (G.trailAcc > 3.6) {
-      G.trailAcc -= 3.6;
+    while (G.trailAcc > TRAIL_STEP) {
+      G.trailAcc -= TRAIL_STEP;
       const inv = 1 / speed;
-      const jitter = rand(-1.3, 1.3);
+      const jitter = rand(-1.5, 1.5);
       const nx = -p.vy * inv;
       const ny = p.vx * inv;
-      const life = rand(0.9, 1.9);
+      const life = rand(1.1, 2.4);
       trail.push({
-        x: p.x - p.vx * inv * 2.2 + nx * jitter,
-        y: p.y - p.vy * inv * 2.2 + ny * jitter,
-        vx: p.vx * 0.08 + rand(-4, 4),
-        vy: p.vy * 0.08 + rand(-4, 4),
+        x: p.x - p.vx * inv * 2.4 + nx * jitter,
+        y: p.y - p.vy * inv * 2.4 + ny * jitter,
+        vx: p.vx * 0.07 + rand(-3.4, 3.4),
+        vy: p.vy * 0.07 + rand(-3.4, 3.4),
+        ang: Math.atan2(p.vy, p.vx),
         life: life,
         max: life,
-        size: rand(4.2, 9.2) * (0.8 + Math.min(speed, 340) / 520),
-        spark: Math.random() < 0.16
+        size: rand(4.8, 10.4) * (0.82 + Math.min(speed, 360) / 400),
+        spark: Math.random() < 0.14
       });
     }
-    if (trail.length > TRAIL_MAX) trail.splice(0, trail.length - TRAIL_MAX);
+    if (trail.length > TRAIL_MAX) {
+      trail.copyWithin(0, trail.length - TRAIL_MAX);
+      trail.length = TRAIL_MAX;
+    }
   }
 
   function collectMote(m) {
@@ -807,40 +935,43 @@
   }
 
   function updateParticles(dt) {
-    for (let i = trail.length - 1; i >= 0; i--) {
+    // in-place compaction: no splice(), no per-frame arrays
+    let keep = 0;
+    for (let i = 0; i < trail.length; i++) {
       const p = trail[i];
       p.life -= dt;
-      if (p.life <= 0) {
-        trail.splice(i, 1);
-        continue;
-      }
+      if (p.life <= 0) continue;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       p.vx *= Math.exp(-1.7 * dt);
       p.vy *= Math.exp(-1.7 * dt);
+      trail[keep++] = p;
     }
-    for (let i = sparks.length - 1; i >= 0; i--) {
+    trail.length = keep;
+
+    keep = 0;
+    for (let i = 0; i < sparks.length; i++) {
       const s = sparks[i];
       s.life -= dt;
-      if (s.life <= 0) {
-        sparks.splice(i, 1);
-        continue;
-      }
+      if (s.life <= 0) continue;
       s.x += s.vx * dt;
       s.y += s.vy * dt;
       s.vx *= Math.exp(-1.1 * dt);
       s.vy *= Math.exp(-1.1 * dt);
+      sparks[keep++] = s;
     }
-    for (let i = waves.length - 1; i >= 0; i--) {
+    sparks.length = keep;
+
+    keep = 0;
+    for (let i = 0; i < waves.length; i++) {
       const w = waves[i];
       w.life -= dt;
-      if (w.life <= 0) {
-        waves.splice(i, 1);
-        continue;
-      }
+      if (w.life <= 0) continue;
       const k = 1 - w.life / w.max;
       w.r = 6 + (w.maxR - 6) * (1 - Math.pow(1 - k, 2));
+      waves[keep++] = w;
     }
+    waves.length = keep;
   }
 
   /* ----------------------------------------------------------------------- update */
@@ -873,6 +1004,7 @@
     updateParticles(pdt);
 
     if (G.flashT > 0) G.flashT = Math.max(0, G.flashT - raw);
+    if (G.burnFlash > 0) G.burnFlash = Math.max(0, G.burnFlash - raw * 1.9);
     if (G.shake > 0) G.shake = Math.max(0, G.shake - raw * 26);
     G.shakeX = G.shake > 0.1 ? rand(-1, 1) * G.shake : 0;
     G.shakeY = G.shake > 0.1 ? rand(-1, 1) * G.shake : 0;
@@ -898,6 +1030,15 @@
       ctx.fillStyle = '#04050a';
       ctx.fillRect(0, 0, W, H);
     }
+  }
+
+  // one full-screen blit, laid over the starfield so the rim falls away too
+  function drawVignette() {
+    if (!vignette) return;
+    ctx.save();
+    ctx.globalAlpha = 0.42;
+    ctx.drawImage(vignette, 0, 0, W, H);
+    ctx.restore();
   }
 
   function drawPlanetRing(pl, front) {
@@ -1019,35 +1160,44 @@
     const bob = Math.sin(G.worldTime * 1.7 + m.phase) * 3.5;
     const x = m.x;
     const y = m.y + bob;
-    const pulse = 1 + Math.sin(G.worldTime * 2.6 + m.phase) * 0.14;
+    const pulse = 1 + Math.sin(G.worldTime * 2.6 + m.phase) * 0.2;
+    const breath = 1 + Math.sin(G.worldTime * 1.35 + m.phase * 1.7) * 0.12;
 
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.7;
-    const gs = 52 * pulse;
-    ctx.drawImage(glowGold, x - gs, y - gs, gs * 2, gs * 2);
-    ctx.globalAlpha = 0.34;
-    ctx.strokeStyle = C.gold;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(x, y, 21 * pulse, m.phase, m.phase + Math.PI * 1.3);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(x, y, 27 * pulse, m.phase + 2.1, m.phase + 2.1 + Math.PI * 0.75);
-    ctx.stroke();
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = 1;
 
-    ctx.shadowColor = C.gold;
-    ctx.shadowBlur = 18;
-    ctx.fillStyle = '#fff4d6';
+    // pulsing halo: two offsets so the light visibly breathes
+    const gs = 48 * pulse * breath;
+    ctx.globalAlpha = 0.62;
+    ctx.drawImage(glowGold, x - gs, y - gs, gs * 2, gs * 2);
+    ctx.globalAlpha = 0.5;
+    const gs2 = 23 * pulse;
+    ctx.drawImage(glowGold, x - gs2, y - gs2, gs2 * 2, gs2 * 2);
+
+    // orbit ticks
+    ctx.strokeStyle = C.gold;
+    ctx.lineWidth = 1.2;
+    ctx.globalAlpha = 0.5;
     ctx.beginPath();
-    ctx.arc(x, y, 5.2, 0, TAU);
+    ctx.arc(x, y, 23 * pulse, m.phase, m.phase + Math.PI * 1.3);
+    ctx.stroke();
+    ctx.globalAlpha = 0.36;
+    ctx.beginPath();
+    ctx.arc(x, y, 29 * pulse, m.phase + 2.1, m.phase + 2.1 + Math.PI * 0.75);
+    ctx.stroke();
+
+    // hot core
+    ctx.globalAlpha = 0.95;
+    const core = 10.5 * pulse;
+    ctx.drawImage(probeCore, x - core, y - core, core * 2, core * 2);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#fff7de';
+    ctx.beginPath();
+    ctx.arc(x, y, 4.6, 0, TAU);
     ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
     ctx.beginPath();
-    ctx.arc(x - 1.2, y - 1.4, 1.3, 0, TAU);
+    ctx.arc(x - 1.3, y - 1.5, 1.6, 0, TAU);
     ctx.fill();
     ctx.restore();
   }
@@ -1062,36 +1212,34 @@
     ctx.save();
     ctx.translate(r.x, r.y);
 
-    if (!active) {
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = 0.14;
-      const gs = r.r * 3.4 * pulse;
-      ctx.drawImage(glowViolet, -gs, -gs, gs * 2, gs * 2);
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = 'source-over';
-    }
-
-    if (active) {
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = 0.42;
-      const gs = r.r * 4.4 * pulse;
-      ctx.drawImage(glowMint, -gs, -gs, gs * 2, gs * 2);
-      ctx.globalAlpha = 1;
-      const portal = ctx.createRadialGradient(0, 0, 0, 0, 0, r.r * 1.1);
-      portal.addColorStop(0, 'rgba(125,255,210,0.13)');
-      portal.addColorStop(0.65, 'rgba(125,255,210,0.035)');
-      portal.addColorStop(1, 'rgba(125,255,210,0)');
-      ctx.fillStyle = portal;
-      ctx.beginPath();
-      ctx.arc(0, 0, r.r * 1.1, 0, TAU);
-      ctx.fill();
-      ctx.globalCompositeOperation = 'source-over';
-    }
+    // lit volume behind the gate: bright enough to read as somewhere to go
+    ctx.globalCompositeOperation = 'lighter';
+    const haze = r.r * (active ? 4.2 : 2.9) * pulse;
+    ctx.globalAlpha = active ? 0.46 : 0.22;
+    ctx.drawImage(active ? glowMint : glowViolet, -haze, -haze, haze * 2, haze * 2);
+    ctx.globalAlpha = active ? 0.5 : 0.26;
+    ctx.drawImage(active ? glowMint : glowViolet, -r.r * 1.15, -r.r * 1.15, r.r * 2.3, r.r * 2.3);
+    ctx.globalAlpha = active ? 0.34 : 0.12;
+    ctx.drawImage(glowWhite, -r.r * 0.7, -r.r * 0.7, r.r * 1.4, r.r * 1.4);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
 
     ctx.rotate(r.spin);
     ctx.lineCap = 'round';
     ctx.shadowColor = active ? C.mint : 'rgba(140,170,230,0.55)';
     ctx.shadowBlur = active ? 22 : 10;
+
+    // outer dashed ring, animated: the gate should look live even when idle
+    ctx.setLineDash(RING_DASH);
+    ctx.lineDashOffset = -G.worldTime * (active ? 34 : 12);
+    ctx.beginPath();
+    ctx.arc(0, 0, r.r * 1.28 * pulse, 0, TAU);
+    ctx.strokeStyle = active ? 'rgba(160,255,230,0.62)' : 'rgba(150,188,255,0.34)';
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = active ? 1.8 : 1.2;
+    ctx.stroke();
+    ctx.setLineDash(EMPTY_DASH);
+    ctx.lineDashOffset = 0;
 
     for (let i = 0; i < 6; i++) {
       const a0 = (i / 6) * TAU;
@@ -1157,23 +1305,54 @@
     if (!p || p.dead) return;
     const sp = Math.hypot(p.vx, p.vy);
     const ang = sp > 8 ? Math.atan2(p.vy, p.vx) : p.angle;
+    const breathe = 1 + Math.sin(G.worldTime * 3.4) * 0.055;
 
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.62;
-    ctx.drawImage(glowCyan, p.x - 44, p.y - 44, 88, 88);
+
+    // wide soft halo + tight bloom: the probe is the brightest object on the board
+    const halo = 64 * breathe;
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(probeHalo, p.x - halo, p.y - halo, halo * 2, halo * 2);
+    ctx.globalAlpha = 0.85;
+    const bloom = 23 * breathe;
+    ctx.drawImage(probeHalo, p.x - bloom, p.y - bloom, bloom * 2, bloom * 2);
+
+    // burn flare: a short, bright bloom that outlives the thrust flame
+    if (G.burnFlash > 0.01) {
+      const f = Math.min(1, G.burnFlash);
+      const fs = 36 + (1 - f) * 118;
+      ctx.globalAlpha = f * 0.95;
+      ctx.drawImage(flareSprite, p.x - fs, p.y - fs, fs * 2, fs * 2);
+    }
+
+    // speed streak trailing the hull
+    if (sp > 55) {
+      const len = clamp(sp * 0.19, 14, 82);
+      const th = 6 + clamp(sp * 0.022, 0, 10);
+      ctx.globalAlpha = clamp(sp / 430, 0.22, 0.78);
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(ang);
+      ctx.drawImage(streakCyan, -len * 1.15, -th, len * 1.45, th * 2);
+      ctx.restore();
+    }
+
+    ctx.globalAlpha = 0.95;
+    const core = 12.5 * breathe;
+    ctx.drawImage(probeCore, p.x - core, p.y - core, core * 2, core * 2);
     ctx.restore();
 
     // locator brackets keep the small probe readable against bright motes
     if (!G.aiming) {
       ctx.save();
-      ctx.strokeStyle = 'rgba(134,242,255,0.3)';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(150,244,255,0.42)';
+      ctx.lineWidth = 1.2;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 19, -2.5, -0.95);
+      ctx.arc(p.x, p.y, 23, -2.5, -0.95);
       ctx.stroke();
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 19, 0.65, 2.2);
+      ctx.arc(p.x, p.y, 23, 0.65, 2.2);
       ctx.stroke();
       ctx.restore();
     }
@@ -1186,89 +1365,120 @@
       const th = p.thrust;
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      const flame = ctx.createLinearGradient(-4, 0, -36 - th * 26, 0);
-      flame.addColorStop(0, 'rgba(200,255,255,0.85)');
-      flame.addColorStop(0.35, 'rgba(110,225,255,0.4)');
+      const flame = ctx.createLinearGradient(-4, 0, -44 - th * 30, 0);
+      flame.addColorStop(0, 'rgba(225,255,255,0.95)');
+      flame.addColorStop(0.32, 'rgba(120,232,255,0.55)');
       flame.addColorStop(1, 'rgba(90,130,255,0)');
       ctx.fillStyle = flame;
       ctx.beginPath();
       ctx.moveTo(-5, 0);
-      ctx.lineTo(-25 - th * 22, -5 - th * 3);
-      ctx.lineTo(-20 - th * 16, 0);
-      ctx.lineTo(-25 - th * 22, 5 + th * 3);
+      ctx.lineTo(-30 - th * 26, -6 - th * 4);
+      ctx.lineTo(-24 - th * 18, 0);
+      ctx.lineTo(-30 - th * 26, 6 + th * 4);
       ctx.closePath();
       ctx.fill();
       ctx.restore();
     }
 
     ctx.shadowColor = C.cyan;
-    ctx.shadowBlur = 20;
-    ctx.fillStyle = '#f2fcff';
+    ctx.shadowBlur = 26;
+    ctx.fillStyle = '#f4fdff';
     ctx.beginPath();
-    ctx.moveTo(14, 0);
-    ctx.lineTo(-8, -7);
-    ctx.lineTo(-3.6, 0);
-    ctx.lineTo(-8, 7);
+    ctx.moveTo(18, 0);
+    ctx.lineTo(-10.5, -9);
+    ctx.lineTo(-4.6, 0);
+    ctx.lineTo(-10.5, 9);
     ctx.closePath();
     ctx.fill();
     ctx.shadowBlur = 0;
-    ctx.strokeStyle = 'rgba(120,240,255,0.9)';
-    ctx.lineWidth = 0.8;
+    ctx.strokeStyle = 'rgba(140,246,255,0.95)';
+    ctx.lineWidth = 1;
     ctx.stroke();
 
     ctx.fillStyle = '#0b1a26';
     ctx.beginPath();
-    ctx.arc(1.5, 0, 1.7, 0, TAU);
+    ctx.arc(2, 0, 2.1, 0, TAU);
     ctx.fill();
 
-    ctx.strokeStyle = 'rgba(160,250,255,0.55)';
-    ctx.lineWidth = 0.7;
+    ctx.strokeStyle = 'rgba(170,252,255,0.62)';
+    ctx.lineWidth = 0.8;
     ctx.beginPath();
-    ctx.moveTo(-2, -3.6);
-    ctx.lineTo(5, -0.8);
+    ctx.moveTo(-2.5, -4.4);
+    ctx.lineTo(6, -1);
     ctx.stroke();
 
     ctx.restore();
   }
 
   function drawTrail() {
-    if (!trail.length) return;
+    const n = trail.length;
+    if (!n) return;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
 
-    // a faint filament keeps the exhaust reading as one body, not a dotted line
-    ctx.lineWidth = 1;
-    for (let i = 1; i < trail.length; i++) {
-      const a = trail[i];
-      const b = trail[i - 1];
-      const age = a.life / a.max;
-      if (age < 0.45) continue;
-      const dx = a.x - b.x;
-      const dy = a.y - b.y;
-      if (dx * dx + dy * dy > 900) continue;
-      ctx.strokeStyle = 'rgba(120,235,255,' + (age * 0.1).toFixed(3) + ')';
+    // three ribbon passes over shrinking spans: brightest at the head, gone aft
+    for (let k = 0; k < RIBBON_SPANS.length; k++) {
+      const start = Math.max(1, Math.floor(n * (1 - RIBBON_SPANS[k])));
       ctx.beginPath();
-      ctx.moveTo(b.x, b.y);
-      ctx.lineTo(a.x, a.y);
+      let open = false;
+      for (let i = start; i < n; i++) {
+        const a = trail[i];
+        const b = trail[i - 1];
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        if (dx * dx + dy * dy > 2600) {
+          open = false;
+          continue;
+        }
+        if (!open) {
+          ctx.moveTo(b.x, b.y);
+          ctx.lineTo(a.x, a.y);
+          open = true;
+        } else {
+          ctx.lineTo(a.x, a.y);
+        }
+      }
+      ctx.globalAlpha = RIBBON_ALPHAS[k];
+      ctx.strokeStyle = k === RIBBON_SPANS.length - 1 ? '#e6feff' : '#7ae4ff';
+      ctx.lineWidth = RIBBON_WIDTHS[k];
       ctx.stroke();
     }
 
-    for (let i = 0; i < trail.length; i++) {
+    // individual puffs: young ones stretch along the flight path
+    for (let i = 0; i < n; i++) {
       const p = trail[i];
       const age = clamp(p.life / p.max, 0, 1);
       const t = 1 - age;
       let sprite = glowCyan;
-      if (t > 0.62) sprite = glowViolet;
-      else if (t < 0.22) sprite = glowWhite;
-      const s = p.size * (0.5 + age * 0.8) * (p.spark ? 0.8 : 1);
-      ctx.globalAlpha = age * age * (p.spark ? 0.85 : 0.62);
-      ctx.drawImage(sprite, p.x - s, p.y - s, s * 2, s * 2);
-      if (t < 0.28) {
-        ctx.globalAlpha = (0.28 - t) * 1.8;
-        const cs = s * 0.5;
+      if (t > 0.72) sprite = glowViolet;
+      else if (t < 0.3) sprite = glowWhite;
+      const s = p.size * (0.55 + age * 0.85) * (p.spark ? 0.82 : 1);
+      ctx.globalAlpha = age * age * (p.spark ? 0.9 : 0.72);
+      if (age > 0.55) {
+        const len = s * (1.5 + age * 1.2);
+        const th = s * 0.9;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.ang);
+        ctx.drawImage(streakCyan, -len * 0.5, -th * 0.5, len, th);
+        ctx.restore();
+      } else {
+        ctx.drawImage(sprite, p.x - s, p.y - s, s * 2, s * 2);
+      }
+      if (t < 0.3) {
+        ctx.globalAlpha = (0.3 - t) * 2.2;
+        const cs = s * 0.55;
         ctx.drawImage(glowWhite, p.x - cs, p.y - cs, cs * 2, cs * 2);
       }
     }
+
+    // bright head where the exhaust leaves the hull
+    const head = trail[n - 1];
+    const ha = 13 + Math.sin(G.worldTime * 14) * 1.6;
+    ctx.globalAlpha = 0.75;
+    ctx.drawImage(probeCore, head.x - ha, head.y - ha, ha * 2, ha * 2);
     ctx.restore();
   }
 
@@ -1296,9 +1506,9 @@
     for (let i = 0; i < waves.length; i++) {
       const w = waves[i];
       const a = Math.max(0, w.life / w.max);
-      ctx.globalAlpha = a * 0.55;
+      ctx.globalAlpha = a * 0.75;
       ctx.strokeStyle = w.color;
-      ctx.lineWidth = 1 + a * 1.6;
+      ctx.lineWidth = 1.4 + a * 2.4;
       ctx.beginPath();
       ctx.arc(w.x, w.y, w.r, 0, TAU);
       ctx.stroke();
@@ -1371,12 +1581,12 @@
     ctx.globalCompositeOperation = 'lighter';
     ctx.strokeStyle = 'rgba(134,242,255,0.5)';
     ctx.lineWidth = 1;
-    ctx.setLineDash([1, 5]);
+    ctx.setLineDash(PREDICT_DASH);
     ctx.beginPath();
     ctx.moveTo(p.x, p.y);
     for (let i = 0; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
     ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.setLineDash(EMPTY_DASH);
 
     for (let i = 3; i < pts.length; i += 5) {
       const a = 0.4 * (1 - i / pts.length);
@@ -1415,13 +1625,14 @@
     // tether
     ctx.strokeStyle = 'rgba(134,242,255,0.35)';
     ctx.lineWidth = 1;
-    ctx.setLineDash([2, 7]);
+    ctx.setLineDash(AIM_DASH);
     ctx.lineDashOffset = -G.worldTime * 26;
     ctx.beginPath();
     ctx.moveTo(p.x, p.y);
     ctx.lineTo(G.aimX, G.aimY);
     ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.setLineDash(EMPTY_DASH);
+    ctx.lineDashOffset = 0;
 
     if (charge > 0.02) {
       const len = 34 + charge * 58;
@@ -1738,11 +1949,11 @@
     ctx.save();
     ctx.strokeStyle = 'rgba(134,242,255,0.09)';
     ctx.lineWidth = 1;
-    ctx.setLineDash([2, 9]);
+    ctx.setLineDash(ORBIT_DASH);
     ctx.beginPath();
     ctx.ellipse(planet.x, planet.y, 420, 246, -0.08, 0, TAU);
     ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.setLineDash(EMPTY_DASH);
     ctx.restore();
 
     drawPlanet(small);
@@ -1854,6 +2065,7 @@
       align: 'right'
     });
 
+    drawVignette();
     drawCorners();
   }
 
@@ -2018,6 +2230,7 @@
       ctx.translate(G.shakeX, G.shakeY);
       drawWorld();
       ctx.restore();
+      drawVignette();
       drawHUD();
       if (G.state === 'fail') drawFailOverlay();
       if (G.state === 'win') drawWinOverlay();
